@@ -1,11 +1,10 @@
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import numpy as np
-from scipy.signal import convolve2d
 from utils import perf
+from numba import jit
 
-
-N = 5000
+N = 10000
 WIDTH = 1920
 HEIGHT = 1080
 SPEED = 1.5
@@ -36,14 +35,20 @@ ants = np.array([xs, ys, np.random.uniform(0, np.pi*2, (N,))]).T
 # ants = np.array([[500, 250, np.pi/3]], dtype=np.float64)
 
 @perf()
+@jit(nopython=True)
 def wanted_direction_delta(domain, ants):
     angles = np.linspace(-FOV, FOV, SAMPLES)
     deltas = np.zeros((len(ants),), dtype=np.float64)
     for n, (x, y, a) in enumerate(ants):
         xs = (x + np.cos(angles+a) * RADIUS).astype(np.int64)
         ys = (y + np.sin(angles+a) * RADIUS).astype(np.int64)
-        vals = domain[(xs, ys)]
-        deltas[n] = angles[np.argmax(vals)]
+        m = 0
+        mi = 0
+        for n,(x,y) in enumerate(zip(xs,ys)):
+            if domain[x,y] > m:
+                m = domain[x,y]
+                mi = n
+        deltas[n] = angles[mi]
     return deltas
 
 
@@ -83,8 +88,17 @@ kernel /= np.sum(kernel)
 
 @perf()
 def diffuse(domain):
-    d2 = convolve2d(domain, kernel, mode="same")
+    out = np.zeros_like(domain)
+    d2 = average(out,domain)
     return domain*(1-DIFFUSION) + d2*DIFFUSION
+
+@perf()
+@jit(nopython= True)
+def average(avgs,domain):
+    for x in range(1,avgs.shape[0]-1):
+        for y in range(1,avgs.shape[1]-1):
+            avgs[x,y] = np.sum(domain[x-1:x+2,y-1:y+2])/9
+    return avgs
 
 @perf()
 def fade(domain):
