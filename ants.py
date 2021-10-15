@@ -7,117 +7,84 @@ import time
 import datetime
 import math
 
-N = 100000
+N = 1000000
 WIDTH = 1920
 HEIGHT = 1080
 SPEED = 1.5
-EDGE_WIDTH = 20
-ROTATION_FACTOR = 0.5
-FADE_PER_STEP = 0.98
-RADIUS = 20
+EDGE_WIDTH = 25
+FADE_PER_STEP = 0.97
+RADIUS = 25
 FOV = np.pi/4
 DIFFUSION = 0.5
 SAMPLES = 3
-ITERATIONS_PER_STEP = 1
+ITERATIONS_PER_STEP = 10
 FRAMES = 5000
 dpi = 100
 
 np.random.seed(0)
 
-
-# domain[..., 270] = 1
-
-# np.random.seed(0)
-
 # [[x,y,direction]]
-min_dir = min(HEIGHT, WIDTH)-EDGE_WIDTH
-angles = np.random.uniform(0, np.pi*2, (N,))
+min_dir = min(HEIGHT, WIDTH)-2*EDGE_WIDTH
+position_angles = np.random.uniform(0, np.pi*2, (N,))
 lengths = np.sqrt(np.random.uniform(0, (min_dir/2)**2, (N,)))
-xs = lengths * np.cos(angles) + WIDTH/2
-ys = lengths * np.sin(angles) + HEIGHT / 2
-ants = np.array([xs, ys, np.random.uniform(
-    0, np.pi*2, (N,))]).T.astype(np.float32)
+xs = lengths * np.cos(position_angles) + WIDTH/2
+ys = lengths * np.sin(position_angles) + HEIGHT / 2
+direction_angles = np.random.uniform(0, np.pi*2, (N,))
+vxs = np.cos(direction_angles)
+vys = np.sin(direction_angles)
+ants = np.array([xs, ys, vxs, vys]).T.astype(np.float32)
 # ants = np.array([np.random.random((N,))*(WIDTH-2*EDGE_WIDTH)+EDGE_WIDTH,
 #                  np.random.random((N,))*(HEIGHT-2*EDGE_WIDTH)+EDGE_WIDTH,
 #                  np.random.random((N,))*2*np.pi]).T
 # ants = np.array([[500, 250, np.pi/3]], dtype=np.float64)
 
 domain = np.zeros((WIDTH, HEIGHT), dtype=np.float32)
-diffusion_buffer = np.zeros_like(domain, dtype=np.float32)
-deltas_buffer = np.zeros((len(ants),), dtype=np.float32)
 
-angles = np.linspace(-FOV, FOV, SAMPLES)
-
-
-@vectorize()
-def wanted_direction_delta(domain, x, y, a):
-    global angles
-    xs = (x + np.cos(angles+a) * RADIUS).astype(np.int32)
-    ys = (y + np.sin(angles+a) * RADIUS).astype(np.int32)
-    m = domain[xs[0], ys[0]]
-    mi = 0
-    for i, (x, y) in enumerate(zip(xs, ys)):
-        if domain[x, y] > m:
-            m = domain[x, y]
-            mi = i
-    return angles[mi]
+look_angles = np.linspace(-FOV, FOV, SAMPLES)
+look_rotations = np.array([[np.cos(a), -np.sin(a), np.sin(a), np.cos(a)]
+                          for a in look_angles], dtype=np.float32)
 
 
-@perf(name="dirs")
-@guvectorize(['float32[:,:],float32[:,:],float32[:]'], "(n,m),(k,l) -> (k)", target='parallel')
-def wanted_direction_deltas_vectorized(domain, ants, buffer):
-    global angles
-    for n, (x, y, a) in enumerate(ants):
+@perf(name="step")
+@guvectorize(['float32[:,:],float32[:,:]'], "(n,m),(k,l)", target='parallel')
+def step(domain, ants):
+    global look_rotations
+    for n, (x, y, vx, vy) in enumerate(ants):
         m = -1
-        mi = 0
-        for i, da in enumerate(angles):
-            x_int = int(x + math.cos(a + da)*RADIUS)
-            y_int = int(y + math.sin(a+da)*RADIUS)
+        vxd = 0
+        vyd = 0
+        for a, b, c, d in look_rotations:
+            vxn = vx*a+vy*c
+            vyn = vx*b+vy*d
+            x_int = int(x + vxn * RADIUS)
+            y_int = int(y + vyn * RADIUS)
             if domain[x_int, y_int] > m:
                 m = domain[x_int, y_int]
-                mi = i
-        buffer[n] = angles[mi]
+                vxd = vxn
+                vyd = vyn
+        ants[n, 2] = vxd
+        ants[n, 3] = vyd
+        ants[n, 0] += ants[n, 2]*SPEED
+        ants[n, 1] += ants[n, 3]*SPEED
 
+        if ants[n, 0] < EDGE_WIDTH:
+            ants[n, 0] = EDGE_WIDTH
+            ants[n, 2] = - ants[n, 2]
 
-@perf()
-def step_ants(ants,deltas):
-    ants[..., 2] += deltas * np.random.random((len(ants,))) * ROTATION_FACTOR
+        if ants[n, 0] >= WIDTH - EDGE_WIDTH:
+            ants[n, 0] = WIDTH-1 - EDGE_WIDTH
+            ants[n, 2] = - ants[n, 2]
 
-    ants[..., 0] += np.cos(ants[..., 2])*SPEED
-    ants[..., 1] += np.sin(ants[..., 2])*SPEED
+        if ants[n, 1] < EDGE_WIDTH:
+            ants[n, 1] = EDGE_WIDTH
+            ants[n, 3] = - ants[n, 3]
 
-    mask = ants[..., 0] < EDGE_WIDTH
-    ants[..., 0][mask] = EDGE_WIDTH
-    ants[..., 2][mask] = np.pi - ants[..., 2][mask]
+        if ants[n, 1] >= HEIGHT-EDGE_WIDTH:
+            ants[n, 1] = HEIGHT - 1 - EDGE_WIDTH
+            ants[n, 3] = - ants[n, 3]
 
-    mask = ants[..., 0] >= WIDTH - EDGE_WIDTH
-    ants[..., 0][mask] = WIDTH-1 - EDGE_WIDTH
-    ants[..., 2][mask] = np.pi - ants[..., 2][mask]
-
-    mask = ants[..., 1] < EDGE_WIDTH
-    ants[..., 1][mask] = EDGE_WIDTH
-    ants[..., 2][mask] = 2*np.pi - ants[..., 2][mask]
-
-    mask = ants[..., 1] >= HEIGHT-EDGE_WIDTH
-    ants[..., 1][mask] = HEIGHT-1 - EDGE_WIDTH
-    ants[..., 2][mask] = 2*np.pi - ants[..., 2][mask]
-
-
-@perf()
-def step(ants):
-    deltas = wanted_direction_deltas_vectorized(
-        domain, ants)
-    step_ants(ants,deltas)
-    
-
-@perf()
-def draw_positions(ants, domain):
-    indices = ants[..., :2].T.astype(np.int32)
-    domain[tuple(indices)] += 1
-
-
-kernel = np.ones((3, 3))
-kernel /= np.sum(kernel)
+        cx, cy = int(ants[n, 0]), int(ants[n, 1])
+        domain[cx, cy] += 1
 
 
 @perf(name="diffuse")
@@ -150,13 +117,14 @@ start = 0
 def getImage():
     global ants
     global domain
-    step(ants)
-    draw_positions(ants, domain)
+    step(domain, ants)
+    #draw_positions(ants, domain)
     domain = diffuse_and_evaporate(domain)
+    # diffuse_and_evaporate.parallel_diagnostics(level=4)
     return domain.T
 
 
-def animate(aspectRatio=1, cmap="afmhot", fps=30):
+def animate(cmap="afmhot", fps=30):
     fig = plt.figure(figsize=(WIDTH/dpi, HEIGHT/dpi))
     plt.tight_layout()
     plt.axis("off")
@@ -164,7 +132,7 @@ def animate(aspectRatio=1, cmap="afmhot", fps=30):
     dt = 1/fps * 1000  # in ms
 
     count = getImage()
-    image = plt.imshow(count, cmap=cmap, animated=True, vmin=0, vmax=8)
+    image = plt.imshow(count, cmap=cmap, animated=True, vmin=0, vmax=20)
 
     def update(n):
         global start
