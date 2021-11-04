@@ -1,7 +1,16 @@
 import time
 import functools
 
+enabled = True
+
+def set_enabled(printing = True):
+    global enabled
+    enabled = printing
+
 def perf(name = None, include_average = True):
+    global enabled
+    if not enabled:
+        return lambda f : f
     def decorator(f):
         nonlocal name
         if name is None:
