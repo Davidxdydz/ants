@@ -1,13 +1,18 @@
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import numpy as np
-from utils import perf
+from matplotlib import image
+from utils import perf, set_enabled
 from numba import jit, vectorize, guvectorize, float32
 import time
 import datetime
 import math
 
-N = 1000000
+
+OUTPUT_PATH = "tmp.mp4"
+SAVE = True
+
+N = 100_000
 WIDTH = 1920
 HEIGHT = 1080
 SPEED = 1.5
@@ -17,9 +22,13 @@ RADIUS = 25
 FOV = np.pi/4
 DIFFUSION = 0.5
 SAMPLES = 3
-ITERATIONS_PER_STEP = 10
-FRAMES = 5000
+ITERATIONS_PER_STEP = 5
+FRAMES = 1000
 dpi = 100
+
+
+set_enabled(not SAVE)
+obstacles = image.imread("map.png")[...,0].T
 
 np.random.seed(0)
 
@@ -46,8 +55,8 @@ look_rotations = np.array([[np.cos(a), -np.sin(a), np.sin(a), np.cos(a)]
 
 
 @perf(name="step")
-@guvectorize(['float32[:,:],float32[:,:]'], "(n,m),(k,l)", target='parallel')
-def step(domain, ants):
+@guvectorize(['float32[:,:],float32[:,:],float32[:,:]'], "(n,m),(n,m),(k,l)", target='parallel')
+def step(domain,view, ants):
     global look_rotations
     for n, (x, y, vx, vy) in enumerate(ants):
         m = -1
@@ -58,8 +67,8 @@ def step(domain, ants):
             vyn = vx*b+vy*d
             x_int = int(x + vxn * RADIUS)
             y_int = int(y + vyn * RADIUS)
-            if domain[x_int, y_int] > m:
-                m = domain[x_int, y_int]
+            if view[x_int, y_int] > m:
+                m = view[x_int, y_int]
                 vxd = vxn
                 vyd = vyn
         ants[n, 2] = vxd
@@ -117,8 +126,9 @@ start = 0
 def getImage():
     global ants
     global domain
-    step(domain, ants)
-    #draw_positions(ants, domain)
+    global obstacles
+    view = domain * obstacles
+    step(domain,view, ants)
     domain = diffuse_and_evaporate(domain)
     # diffuse_and_evaporate.parallel_diagnostics(level=4)
     return domain.T
@@ -135,12 +145,13 @@ def animate(cmap="afmhot", fps=30):
     image = plt.imshow(count, cmap=cmap, animated=True, vmin=0, vmax=20)
 
     def update(n):
-        global start
-        # t = time.time() - start
-        # per_frame = t/(n+1)
-        # remaining = per_frame*(FRAMES-n)
-        # r = datetime.timedelta(seconds = remaining)
-        # print(f"{n}/{FRAMES}: {r} remaining ({per_frame:.2f}s/per frame) ")
+        if SAVE:
+            global start
+            t = time.time() - start
+            per_frame = t/(n+1)
+            remaining = per_frame*(FRAMES-n)
+            r = datetime.timedelta(seconds = remaining)
+            print(f"{n}/{FRAMES}: {r} remaining ({per_frame:.2f}s/per frame) ")
         for _ in range(ITERATIONS_PER_STEP):
             count = getImage()
         image.set_array(count)
@@ -148,11 +159,13 @@ def animate(cmap="afmhot", fps=30):
 
     return FuncAnimation(fig, update, None, interval=dt, blit=True, save_count=FRAMES)
 
-
 animation = animate()
-plt.show()
-# plt.rcParams['animation.ffmpeg_path'] = 'C:\\Users\\david\\Documents\\ffmpeg-2021-10-11-git-90a0da9f14-essentials_build\\bin\\ffmpeg.exe'
-# from matplotlib.animation import FFMpegWriter
-# writermp4 = FFMpegWriter(fps=30,bitrate=80000)
-# start = time.time()
-# animation.save("test3.mp4",writer = writermp4,dpi= dpi)
+
+if SAVE:
+    plt.rcParams['animation.ffmpeg_path'] = 'C:\\Users\\david\\Documents\\ffmpeg-2021-10-11-git-90a0da9f14-essentials_build\\bin\\ffmpeg.exe'
+    from matplotlib.animation import FFMpegWriter
+    writermp4 = FFMpegWriter(fps=30,bitrate=80000)
+    start = time.time()
+    animation.save("obstaclestest view.mp4",writer = writermp4,dpi= dpi)
+else:
+    plt.show()
