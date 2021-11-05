@@ -3,52 +3,84 @@ from matplotlib.animation import FuncAnimation
 import numpy as np
 from matplotlib import image
 from utils import perf, set_enabled
-from numba import jit, vectorize, guvectorize, float32
+from numba import guvectorize
 import time
 import datetime
-import math
-
 
 OUTPUT_PATH = "tmp.mp4"
+
+# enable rendering and saving animation
 SAVE = True
 
-N = 100_000
+
+# number of ants
+N = 1000000
+
+# resolution
 WIDTH = 1920
 HEIGHT = 1080
-SPEED = 1.5
+
+# movement speed of the ants per step
+SPEED = 1.5 
+
+# ants will be "reflected" EDGE_WIDTH  pixels before reaching the border of the domain.
+# used so that the "sensing" of the ants does not cause an out of bounds are
 EDGE_WIDTH = 25
+
+# mulitplicative factor applied to the pheromone density after every step
 FADE_PER_STEP = 0.97
+
+# distance at which the ants sample the phermone density
 RADIUS = 25
+
+# ants look ahead from -FOV to FOV
 FOV = np.pi/4
-DIFFUSION = 0.5
+
+# how many points in front the ants sample
 SAMPLES = 3
-ITERATIONS_PER_STEP = 5
-FRAMES = 1000
+
+# the pheromones get averaged over adjacent pixels and the blended with the previous pheromone
+# concentration, weighted by DIFFUSION
+DIFFUSION = 0.5
+
+ITERATIONS_PER_STEP = 10
+
+# parameters for saving the animation
+FRAMES = 5000
 dpi = 100
 
+# for time measuring
+start = 0
 
+# only output performance when not rendering
 set_enabled(not SAVE)
+# take one channel from image as obstacle
 obstacles = image.imread("map.png")[...,0].T
 
+# ensure reproducibility
 np.random.seed(0)
 
-# [[x,y,direction]]
+# smallest domain size, considering EDGEWIDTH
 min_dir = min(HEIGHT, WIDTH)-2*EDGE_WIDTH
+
+# uniform random positions in a circle for ants
 position_angles = np.random.uniform(0, np.pi*2, (N,))
+# rescaling to ensure uniform distribution
 lengths = np.sqrt(np.random.uniform(0, (min_dir/2)**2, (N,)))
 xs = lengths * np.cos(position_angles) + WIDTH/2
 ys = lengths * np.sin(position_angles) + HEIGHT / 2
+
+# velocities for all ants
 direction_angles = np.random.uniform(0, np.pi*2, (N,))
 vxs = np.cos(direction_angles)
 vys = np.sin(direction_angles)
 ants = np.array([xs, ys, vxs, vys]).T.astype(np.float32)
-# ants = np.array([np.random.random((N,))*(WIDTH-2*EDGE_WIDTH)+EDGE_WIDTH,
-#                  np.random.random((N,))*(HEIGHT-2*EDGE_WIDTH)+EDGE_WIDTH,
-#                  np.random.random((N,))*2*np.pi]).T
-# ants = np.array([[500, 250, np.pi/3]], dtype=np.float64)
 
+# pheromone concentration
 domain = np.zeros((WIDTH, HEIGHT), dtype=np.float32)
 
+# precalculate the rotation matrices for the sample points in front of the ants
+# saves some sin and cos in the heavy loops
 look_angles = np.linspace(-FOV, FOV, SAMPLES)
 look_rotations = np.array([[np.cos(a), -np.sin(a), np.sin(a), np.cos(a)]
                           for a in look_angles], dtype=np.float32)
@@ -58,11 +90,15 @@ look_rotations = np.array([[np.cos(a), -np.sin(a), np.sin(a), np.cos(a)]
 @guvectorize(['float32[:,:],float32[:,:],float32[:,:]'], "(n,m),(n,m),(k,l)", target='parallel')
 def step(domain,view, ants):
     global look_rotations
+
+    # for every ant
     for n, (x, y, vx, vy) in enumerate(ants):
         m = -1
         vxd = 0
         vyd = 0
+        # find the highest pheromone concentration ahead
         for a, b, c, d in look_rotations:
+            # rotation via precalculated rotation matrices
             vxn = vx*a+vy*c
             vyn = vx*b+vy*d
             x_int = int(x + vxn * RADIUS)
@@ -71,11 +107,14 @@ def step(domain,view, ants):
                 m = view[x_int, y_int]
                 vxd = vxn
                 vyd = vyn
+
+        # update the velocities and positions
         ants[n, 2] = vxd
         ants[n, 3] = vyd
         ants[n, 0] += ants[n, 2]*SPEED
         ants[n, 1] += ants[n, 3]*SPEED
 
+        # bounce ants of domain bounds
         if ants[n, 0] < EDGE_WIDTH:
             ants[n, 0] = EDGE_WIDTH
             ants[n, 2] = - ants[n, 2]
@@ -92,6 +131,7 @@ def step(domain,view, ants):
             ants[n, 1] = HEIGHT - 1 - EDGE_WIDTH
             ants[n, 3] = - ants[n, 3]
 
+        # increase pheromone concentration at ants position
         cx, cy = int(ants[n, 0]), int(ants[n, 1])
         domain[cx, cy] += 1
 
@@ -99,6 +139,7 @@ def step(domain,view, ants):
 @perf(name="diffuse")
 @guvectorize(['float32[:,:],float32[:,:]'], '(n,m)->(n,m)', target="parallel")
 def diffuse_and_evaporate(domain, avgs):
+    # basically convolve with 3x3 ones
     for x in range(1, avgs.shape[0]-1):
         for y in range(1, avgs.shape[1]-1):
             avgs[x, y] = domain[x, y]
@@ -114,23 +155,22 @@ def diffuse_and_evaporate(domain, avgs):
             avgs[x, y] += domain[x-1, y]
             avgs[x, y] += domain[x-1, y+1]
 
+            # renormalize
             avgs[x, y] /= 9
+
+            # blend the averaged domain with the original
             avgs[x, y] = (avgs[x, y]*DIFFUSION + domain[x, y]
                           * (1-DIFFUSION))*FADE_PER_STEP
-
-
-start = 0
-
-
 @perf()
 def getImage():
     global ants
     global domain
     global obstacles
     view = domain * obstacles
+    # perform one step for the ants
     step(domain,view, ants)
+    # diffuse and evaporate ;)
     domain = diffuse_and_evaporate(domain)
-    # diffuse_and_evaporate.parallel_diagnostics(level=4)
     return domain.T
 
 
@@ -146,6 +186,7 @@ def animate(cmap="afmhot", fps=30):
 
     def update(n):
         if SAVE:
+            # estimate remaining time when rendering
             global start
             t = time.time() - start
             per_frame = t/(n+1)
