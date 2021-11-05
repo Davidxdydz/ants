@@ -166,6 +166,8 @@ def getImage():
     global ants
     global domain
     global obstacles
+
+    # mask the domain with obstacles
     view = domain * obstacles
     # perform one step for the ants
     step(domain,view, ants)
