@@ -209,6 +209,6 @@ if SAVE:
     from matplotlib.animation import FFMpegWriter
     writermp4 = FFMpegWriter(fps=30,bitrate=80000)
     start = time.time()
-    animation.save("obstaclestest view.mp4",writer = writermp4,dpi= dpi)
+    animation.save(OUTPUT_PATH,writer = writermp4,dpi= dpi)
 else:
     plt.show()
