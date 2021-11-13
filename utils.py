@@ -7,7 +7,7 @@ def set_enabled(printing = True):
     global enabled
     enabled = printing
 
-def perf(name = None, include_average = True):
+def perf(name = None, include_average = True,skip = 0):
     global enabled
     if not enabled:
         return lambda f : f
@@ -21,14 +21,21 @@ def perf(name = None, include_average = True):
         def wrapper(*args,**kwargs):
             nonlocal total
             nonlocal n
+            nonlocal skip
             start = time.time()
             result = f(*args,**kwargs)
             ms = (time.time()-start)*1000
-            total += ms
-            n+= 1
+            if skip <= 0:
+                total += ms
+                n+= 1
+            else:
+                skip -= 1
             output = f"{name}: {ms:.2f}ms"
             if include_average:
-                output += f"\tavg: {total/n}ms"
+                if n == 0:
+                    output += f"\tavg: ---ms"
+                else:
+                    output += f"\tavg: {total/n}ms"
             print(output)
             return result
         return wrapper
