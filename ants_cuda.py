@@ -132,7 +132,7 @@ def step_kernel(domain, view, ants):
     domain[cy, cx] += 1
 
 
-@perf(skip=1)
+# @perf(skip=1)
 def step_cuda(domain, view, ants):
     per_thread = 1
     threadsperblock = 128
@@ -142,7 +142,7 @@ def step_cuda(domain, view, ants):
 
 
 @cuda.jit
-def diffusion_kernel(domain, output,pic_out):
+def diffusion_kernel(domain, output,pic_out,render):
     x, y = cuda.grid(2)
 
     if x == 0 or y == 0 or x >= domain.shape[1]-1 or y >= domain.shape[0]-1:
@@ -165,27 +165,28 @@ def diffusion_kernel(domain, output,pic_out):
     result = (result*DIFFUSION + domain[y, x]
                     * (1-DIFFUSION))*FADE_PER_STEP
     output[y, x] = result
-    pic_out[y, x, 0] = result/512  # b
-    pic_out[y, x, 1] = 0  # g
-    pic_out[y, x, 2] = result/512  # r
+    if render:
+        pic_out[y, x, 0] = result/512  # b
+        pic_out[y, x, 1] = 0  # g
+        pic_out[y, x, 2] = result/512  # r
 
 
-@perf(skip=1)
-def diffuse_evaporate_render(domain,output, pic_out):
+# @perf(skip=1)
+def diffuse_evaporate_render(domain,output, pic_out,render):
     threads_per_block_x = 16
     threads_per_block_y = 8
     blocks_per_grid_x = int(np.ceil(WIDTH / threads_per_block_x))
     blocks_per_grid_y = int(np.ceil(HEIGHT / threads_per_block_y))
     blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
     threads_per_block = (threads_per_block_x,threads_per_block_y)
-    diffusion_kernel[blocks_per_grid, threads_per_block](domain, output, pic_out)
+    diffusion_kernel[blocks_per_grid, threads_per_block](domain, output, pic_out,render)
 
 
 counter = 0
 
 
 @perf(skip=1)
-def get_image():
+def get_image(steps):
     global ants
     global domain
 
@@ -194,33 +195,32 @@ def get_image():
 
     global counter
 
-    if counter % 2 == 0:
-        # perform one step for the ants
-        device_buffer_1.copy_to_device(device_buffer_2)
-        step_cuda(device_buffer_1, device_buffer_2, ants)
-        # diffuse and evaporate ;)
-        diffuse_evaporate_render(device_buffer_1,device_buffer_2, pic_buffer)
-        counter += 1
-        return pic_buffer.copy_to_host()
-    else:
-        # perform one step for the ants
-        device_buffer_2.copy_to_device(device_buffer_1)
-        step_cuda(device_buffer_2, device_buffer_1, ants)
-        # diffuse and evaporate ;)
-        diffuse_evaporate_render(device_buffer_2,device_buffer_1, pic_buffer)
-        counter += 1
-        return pic_buffer.copy_to_host()
+    for i in range(steps):
+        # use two buffers to limit memory transfer
+        if counter % 2 == 0:
+            # perform one step for the ants
+            device_buffer_1.copy_to_device(device_buffer_2)
+            step_cuda(device_buffer_1, device_buffer_2, ants)
+            # diffuse and evaporate ;)
+            diffuse_evaporate_render(device_buffer_1,device_buffer_2, pic_buffer,i == steps-1)
+            counter += 1
+        else:
+            # perform one step for the ants
+            device_buffer_2.copy_to_device(device_buffer_1)
+            step_cuda(device_buffer_2, device_buffer_1, ants)
+            # diffuse and evaporate ;)
+            diffuse_evaporate_render(device_buffer_2,device_buffer_1, pic_buffer,i == steps-1)
+            counter += 1
+    return pic_buffer.copy_to_host()
 
 
 def animate(cmap="afmhot", target_fps=30):
     n = 0
     t = 0
-    im = get_image()
+    im = get_image(ITERATIONS_PER_STEP)
     start = time.time()
     while True:
-        im = None
-        for _ in range(ITERATIONS_PER_STEP):
-            im = get_image()
+        im = get_image(ITERATIONS_PER_STEP)
         cv2.imshow(WINDOW_NAME, im)
         n += 1
         t = time.time() - start
