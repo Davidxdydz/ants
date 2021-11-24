@@ -3,25 +3,25 @@ from matplotlib.animation import FuncAnimation
 import numpy as np
 from matplotlib import image
 from utils import perf, set_enabled
-from numba import guvectorize
+from numba import guvectorize, cuda
 import time
 import datetime
 
 OUTPUT_PATH = "tmp.mp4"
 
 # enable rendering and saving animation
-SAVE = True
+SAVE = False
 
 
 # number of ants
-N = 1000000
+N = 1_000_000
 
 # resolution
 WIDTH = 1920
 HEIGHT = 1080
 
 # movement speed of the ants per step
-SPEED = 1.5 
+SPEED = 1.5
 
 # ants will be "reflected" EDGE_WIDTH  pixels before reaching the border of the domain.
 # used so that the "sensing" of the ants does not cause an out of bounds are
@@ -47,34 +47,38 @@ ITERATIONS_PER_STEP = 10
 
 # parameters for saving the animation
 FRAMES = 5000
-dpi = 100
+DPI = 100
 
 # for time measuring
 start = 0
 
 # only output performance when not rendering
 set_enabled(not SAVE)
-# take one channel from image as obstacle
-obstacles = image.imread("map.png")[...,0].T
 
 # ensure reproducibility
 np.random.seed(0)
 
+def spawn_ants_in_circle(count, radius, center):
+    # uniform random positions in a circle for ants
+    position_angles = np.random.uniform(0, np.pi*2, (count,))
+    # rescaling to ensure uniform distribution
+    lengths = np.sqrt(np.random.uniform(0, radius**2, (count,)))
+    xs = lengths * np.cos(position_angles) + center[0]
+    ys = lengths * np.sin(position_angles) + center[1]
+
+    # velocities for all ants
+    direction_angles = np.random.uniform(0, np.pi*2, (count,))
+    vxs = np.cos(direction_angles)
+    vys = np.sin(direction_angles)
+    ants = np.array([xs, ys, vxs, vys]).T
+    return ants.astype(np.float32)
+
+# take one channel from image as obstacle
+obstacles = image.imread("map.png")[..., 0].T
+
 # smallest domain size, considering EDGEWIDTH
 min_dir = min(HEIGHT, WIDTH)-2*EDGE_WIDTH
-
-# uniform random positions in a circle for ants
-position_angles = np.random.uniform(0, np.pi*2, (N,))
-# rescaling to ensure uniform distribution
-lengths = np.sqrt(np.random.uniform(0, (min_dir/2)**2, (N,)))
-xs = lengths * np.cos(position_angles) + WIDTH/2
-ys = lengths * np.sin(position_angles) + HEIGHT / 2
-
-# velocities for all ants
-direction_angles = np.random.uniform(0, np.pi*2, (N,))
-vxs = np.cos(direction_angles)
-vys = np.sin(direction_angles)
-ants = np.array([xs, ys, vxs, vys]).T.astype(np.float32)
+ants = spawn_ants_in_circle(N, min_dir/2, (WIDTH/2, HEIGHT/2))
 
 # pheromone concentration
 domain = np.zeros((WIDTH, HEIGHT), dtype=np.float32)
@@ -88,7 +92,7 @@ look_rotations = np.array([[np.cos(a), -np.sin(a), np.sin(a), np.cos(a)]
 
 @perf(name="step")
 @guvectorize(['float32[:,:],float32[:,:],float32[:,:]'], "(n,m),(n,m),(k,l)", target='parallel')
-def step(domain,view, ants):
+def step(domain, view, ants):
     global look_rotations
 
     # for every ant
@@ -161,8 +165,10 @@ def diffuse_and_evaporate(domain, avgs):
             # blend the averaged domain with the original
             avgs[x, y] = (avgs[x, y]*DIFFUSION + domain[x, y]
                           * (1-DIFFUSION))*FADE_PER_STEP
+
+
 @perf()
-def getImage():
+def get_image():
     global ants
     global domain
     global obstacles
@@ -170,20 +176,20 @@ def getImage():
     # mask the domain with obstacles
     view = domain * obstacles
     # perform one step for the ants
-    step(domain,view, ants)
+    step(domain, view, ants)
     # diffuse and evaporate ;)
     domain = diffuse_and_evaporate(domain)
     return domain.T
 
 
 def animate(cmap="afmhot", fps=30):
-    fig = plt.figure(figsize=(WIDTH/dpi, HEIGHT/dpi))
+    fig = plt.figure(figsize=(WIDTH/DPI, HEIGHT/DPI))
     plt.tight_layout()
     plt.axis("off")
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
     dt = 1/fps * 1000  # in ms
 
-    count = getImage()
+    count = get_image()
     image = plt.imshow(count, cmap=cmap, animated=True, vmin=0, vmax=20)
 
     def update(n):
@@ -193,22 +199,23 @@ def animate(cmap="afmhot", fps=30):
             t = time.time() - start
             per_frame = t/(n+1)
             remaining = per_frame*(FRAMES-n)
-            r = datetime.timedelta(seconds = remaining)
+            r = datetime.timedelta(seconds=remaining)
             print(f"{n}/{FRAMES}: {r} remaining ({per_frame:.2f}s/per frame) ")
         for _ in range(ITERATIONS_PER_STEP):
-            count = getImage()
+            count = get_image()
         image.set_array(count)
         return image,
 
     return FuncAnimation(fig, update, None, interval=dt, blit=True, save_count=FRAMES)
+
 
 animation = animate()
 
 if SAVE:
     plt.rcParams['animation.ffmpeg_path'] = 'C:\\Users\\david\\Documents\\ffmpeg-2021-10-11-git-90a0da9f14-essentials_build\\bin\\ffmpeg.exe'
     from matplotlib.animation import FFMpegWriter
-    writermp4 = FFMpegWriter(fps=30,bitrate=80000)
+    writermp4 = FFMpegWriter(fps=30, bitrate=80000)
     start = time.time()
-    animation.save(OUTPUT_PATH,writer = writermp4,dpi= dpi)
+    animation.save(OUTPUT_PATH, writer=writermp4, dpi=DPI)
 else:
     plt.show()
